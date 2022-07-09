@@ -237,6 +237,8 @@ class ControllerBridge:
                                             midiMsg.control = 81
                                         elif (midiMsg.control == 4):  # map wah
                                             midiMsg.control = 80
+                                            if (midiMsg.value>0): # scale wah 0-64
+                                                midiMsg.value=round(midiMsg.value/2)
 
                                         if (self.lastMsgSent is not None and self.lastMsgSent.is_cc()):
                                             if midiMsg.control==self.lastMsgSent.control and midiMsg.value==self.lastMsgSent.value:
@@ -252,7 +254,7 @@ class ControllerBridge:
                                         self.amp.send(midiMsg)
                                     
                                     print(Style.RESET_ALL)
-
+ 
                         except Exception as midiErr:
                             print(midiErr)
                             pass
