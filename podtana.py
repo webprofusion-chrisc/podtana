@@ -97,20 +97,18 @@ class ControllerBridge:
 
         allBytes = bytearray(b'')
         try:
-            # read n bytes from endpoint
-            dataRead = True
-           
+            # read n bytes from endpoint, append output until there is no more data or we have reached max reads
 
-            maxRead = 8
+            maxRead = 4
             while maxRead>0:
                 maxRead = maxRead-1
-                data = endpoint.read(16, timeout)
+                data = endpoint.read(8, timeout)
                 
-                if data is not None and len(data)>0:
+                if data is not None:
                     bData= bytes(data)
                     allBytes +=bData
                 else:
-                    print("non data, breaking")
+                    print("no data, breaking")
                     break
 
             return allBytes
@@ -121,6 +119,11 @@ class ControllerBridge:
             print("read :: {}".format(e))
             return None
 
+    def logInfo(self,msg):
+        print(Fore.WHITE+msg)
+
+    def logError(self,msg):
+        print(Fore.RED+msg)
 
     def openControllerDevice(self):
 
@@ -144,58 +147,56 @@ class ControllerBridge:
             self.device = usb.core.find(
                 idVendor=VENDOR_ID, idProduct=PRODUCT_ID)
 
-            # if the OS kernel already claimed the device
-            if self.device.is_kernel_driver_active(0) is True:
-                # tell the kernel to detach - requires elevated privileges
-                self.device.detach_kernel_driver(0)
-                self.was_kernel_driver_active = True
+            if (self.device is not None):
+                # if the OS kernel already claimed the device
+                if self.device.is_kernel_driver_active(0) is True:
+                    # tell the kernel to detach - requires elevated privileges
+                    self.device.detach_kernel_driver(0)
+                    self.was_kernel_driver_active = True
         else:
             self.device = usb.core.find(
                 idVendor=VENDOR_ID, idProduct=PRODUCT_ID)
 
         if self.device is None:
-            raise ValueError(
-                'Controller Device not found. Please ensure it is connected.')
+            self.logError("Controller Device not found. Please ensure it is connected.")
+        else:
+            self.device.reset()
 
-        self.device.reset()
+            # Set the active configuration. With no arguments, the first configuration will be the active one
+            self.device.set_configuration(1)
 
-        # Set the active configuration. With no arguments, the first configuration will be the active one
-        self.device.set_configuration(1)
+            # important for POD HD400 - set altsetting to read/write as midi
+            self.device.set_interface_altsetting(interface=0, alternate_setting=5)
 
-        # important for POD HD400 - set altsetting to read/write as midi
-        self.device.set_interface_altsetting(interface=0, alternate_setting=5)
+            cfg = self.device.get_active_configuration()
 
-        cfg = self.device.get_active_configuration()
+            intf = cfg[(0, 5)]
 
-        intf = cfg[(0, 5)]
+            # get read and write endpoints
+            for ep in intf:
+                sys.stdout.write('\t\t' +
+                                str(ep.bEndpointAddress) +
+                                '\n')
+                if str(ep.bEndpointAddress) == CONTROLLER_WRITE_ENDPOINT:
+                    self.epWrite = ep
+                elif str(ep.bEndpointAddress) == CONTROLLER_READ_ENDPOINT:
+                    self.epRead = ep
 
-        # get read and write endpoints
-        for ep in intf:
-            sys.stdout.write('\t\t' +
-                             str(ep.bEndpointAddress) +
-                             '\n')
-            if str(ep.bEndpointAddress) == CONTROLLER_WRITE_ENDPOINT:
-                self.epWrite = ep
-            elif str(ep.bEndpointAddress) == CONTROLLER_READ_ENDPOINT:
-                self.epRead = ep
+            assert self.epRead is not None
+            assert self.epWrite is not None
 
-        assert self.epRead is not None
-        assert self.epWrite is not None
-
-        print("Endpoints:")
-        print(self.epRead)
-        print(self.epWrite)
-        
-        # send midi reset message
-        self.epWrite.write(mido.Message('reset').bytes())
+            print("Endpoints:")
+            print(self.epRead)
+            print(self.epWrite)
+            
+            # send midi reset message
+            self.epWrite.write(mido.Message('reset').bytes())
 
     def startMessageProcessing(self):
         """ 
         Start message processing loop
         Continuously reads from USB, converts data (if any) to midi and send to both virtual midi and directly to connected amp
         """
-
-
         print(Fore.RED + "Podtana HD Started")
         if (self.amp is not None):
             print(Fore.GREEN+"Amp Connected")
@@ -206,6 +207,8 @@ class ControllerBridge:
             print(Fore.GREEN+"Controller Connected")
         else:
             print(Fore.RED+"Controller Not Connected")
+            self.cleanup()
+            quit()
 
         print(Style.RESET_ALL)
 
@@ -213,54 +216,42 @@ class ControllerBridge:
             while True:
                 try:
 
-                    data = self.read_from_endpoint(self.epRead, 100)
+                    data = self.read_from_endpoint(self.epRead, 25)
 
                     if data != None:
                         try:
-                            #print(data)
-
-                            #midiMsg = mido.Message.from_bytes(data);
                             messages = mido.parse_all(data)
 
                             if messages is not None and len(messages)>0:
-                                midiMsg = messages[0]
                                 
-                                # print(midiMsg)
-
-                                if (len(messages)>1):
-                                    #print(messages)
-                                    for x in messages:
-                                        if (x.type=='program_change'):
-                                            midiMsg=x
-                                            break
-
-                                # send message to virtual port, if enabled
-                                if (self.midiout is not None):
-                                    self.midiout.send_message(midiMsg.bytes())
-
-                                # transpose/map controller values to amp midi values
-                                if (midiMsg.is_cc()):
+                                for midiMsg in messages:
                                     
-                                    if (midiMsg.control == 7):  # map vol
-                                        midiMsg.control = 81
-                                    elif (midiMsg.control == 4):  # map wah
-                                        midiMsg.control = 80
+                                    # send message to virtual port, if enabled
+                                    if (self.midiout is not None):
+                                        self.midiout.send_message(midiMsg.bytes())
 
-                                    if (self.lastMsgSent is not None and self.lastMsgSent.is_cc()):
-                                        if midiMsg.control==self.lastMsgSent.control and midiMsg.value==self.lastMsgSent.value:
-                                            print(Style.DIM + 'skipping duplicate')
-                                            continue
+                                    # transpose/map controller values to amp midi values
+                                    if (midiMsg.is_cc()):
+                                        
+                                        if (midiMsg.control == 7):  # map vol
+                                            midiMsg.control = 81
+                                        elif (midiMsg.control == 4):  # map wah
+                                            midiMsg.control = 80
 
-                                self.lastMsgSent=midiMsg
+                                        if (self.lastMsgSent is not None and self.lastMsgSent.is_cc()):
+                                            if midiMsg.control==self.lastMsgSent.control and midiMsg.value==self.lastMsgSent.value:
+                                                print(Style.DIM + 'skipping duplicate')
+                                                continue
 
-                                print(Fore.GREEN + "SENDING: {}".format(midiMsg))
+                                    self.lastMsgSent=midiMsg
 
-                                # send message to amp, if enabled
-                                if (self.amp is not None):
-                                    #print("sending {} ".format(midiMsg.type))
-                                    self.amp.send(midiMsg)
-                                
-                                print(Style.RESET_ALL)
+                                    print(Fore.GREEN + "SENDING: {}".format(midiMsg))
+
+                                    # send message to amp, if enabled
+                                    if (self.amp is not None):
+                                        self.amp.send(midiMsg)
+                                    
+                                    print(Style.RESET_ALL)
 
                         except Exception as midiErr:
                             print(midiErr)
