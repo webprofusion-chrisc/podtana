@@ -12,7 +12,7 @@ Requirements:
 Requires user permissions for usb device:
 `sudo nano /etc/udev/rules.d/50-myusb.rules`
 
-All all users to read/write to the controller
+Allow all users to read/write to the controller
 `SUBSYSTEMS=="usb", ATTRS{idVendor}=="0e41", ATTRS{idProduct}=="5058", GROUP="users", MODE="0666"`
 
 To start script on device connection (or boot), specify a user and path:
