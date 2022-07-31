@@ -15,7 +15,7 @@ import datetime as dt
 import rtmidi
 import threading
 import queue
-from colorama import Fore, Back, Style
+from colorama import Fore, Back, Style, init
 
 VENDOR_ID = 0x0e41  # controller USB device vendor ID (Line 6)
 PRODUCT_ID = 0x5058  # product USB device id (POD HD 400)
@@ -54,6 +54,9 @@ class ControllerBridge:
 
     messageQueue = queue.SimpleQueue()
 
+    controllerConnected = False
+    ampConnected = False
+
     def setup(self):
         """ Perform initial setup for midi etc """
         # create virtual midi output
@@ -61,21 +64,37 @@ class ControllerBridge:
             self.midiout = rtmidi.MidiOut()
             self.midiin = rtmidi.MidiIn()
 
-            # find matching amp name port
-            allPorts = mido.get_output_names()
-            print(allPorts)
-
-            selectedAmpPort = AMP_PORT
-            for p in allPorts:
-                if (AMP_PORT in p):
-                    selectedAmpPort = p
-
-            self.amp = mido.open_output(selectedAmpPort)
-
             self.midiout.open_virtual_port(VIRTUAL_PORT)
             self.midiin.open_virtual_port(VIRTUAL_PORT)
 
             print(mido.get_output_names())
+
+    def findAmpMidiPort(self, printPorts=False):
+        allPorts = mido.get_output_names()
+
+        if (printPorts):
+            print(allPorts)
+
+        for p in allPorts:
+            if (AMP_PORT in p):
+                return p
+
+        # amp not found in midi ports list, must be disconnected
+        return None
+
+    def reconnect(self):
+
+        self.logInfo("Reconnecting all devices")
+
+        # connect or reconnect to all devices
+        ampPort = self.findAmpMidiPort()
+
+        if (ampPort):
+            # reconnect amp
+            self.amp = mido.open_output(ampPort)
+
+        if (self.controllerConnected):            
+            self.openControllerDevice()
 
     def cleanup(self):
         """ Perform cleanup on exit """
@@ -107,7 +126,7 @@ class ControllerBridge:
             maxRead = 4
             while maxRead > 0:
                 maxRead = maxRead-1
-                data = endpoint.read(8, timeout)
+                data = endpoint.read(32, timeout)
 
                 if data is not None:
                     bData = bytes(data)
@@ -137,6 +156,13 @@ class ControllerBridge:
     def openControllerDevice(self):
 
         # derived from https://www.ontrak.net/LibUSBPy.htm
+
+        if (self.device):
+            print("device may already be connected, closing")
+            try:
+                usb.util.release_interface(self.device, 0)
+            except:
+                pass
 
         if platform.system() == 'Windows':
             # required for Windows only
@@ -207,11 +233,11 @@ class ControllerBridge:
         """
         Continuously read from USB, add messages to queue
         """
-        try:
-            while True:
-                try:
-
-                    data = self.read_from_endpoint(self.epRead, 25)
+    
+        while True:
+            try:
+                if (self.controllerConnected and self.epRead is not None):
+                    data = self.read_from_endpoint(self.epRead, 0)
 
                     if data != None:
                         try:
@@ -226,18 +252,64 @@ class ControllerBridge:
                             self.logError(midiErr)
                             pass
 
-                except Exception as e:
-                    self.logError(e)
-        except:
-            self.cleanup()
-            quit()
+            except Exception as e:
+                self.logError("Exception during controller read.")
+                self.logError(e)
+
+
+    def startDeviceWatcher(self):
+        """
+        Continuously check USB device list, detected if changes have occurred
+        """
+
+        while True:
+            try:
+
+                controllerDevice = usb.core.find(
+                    idVendor=VENDOR_ID, idProduct=PRODUCT_ID)
+
+                ampPort = self.findAmpMidiPort()
+
+                configChanged = False
+
+                if (controllerDevice is None):
+                    if (self.controllerConnected is True):
+                        self.logInfo("Controller disconnected")
+                        self.controllerConnected = False
+                        configChanged = True
+                else:
+                    if (self.controllerConnected is False):
+                        # reconnect if not already connected
+                        self.logInfo("Controller [re]connected")
+                        self.controllerConnected = True
+                        configChanged = True
+
+                if (ampPort is None):
+                    if (self.ampConnected is True):
+                        self.logInfo("Amp disconnected")
+                        self.ampConnected = False
+                        configChanged = True
+                else:
+                    if (self.ampConnected is False):
+                        self.logInfo("Amp [re]connected")
+                        self.ampConnected = True  
+                        configChanged = True
+
+                if (configChanged and self.ampConnected and self.controllerConnected):
+                    self.reconnect()
+
+                time.sleep(1)
+
+            except Exception as e:
+                self.logError(e)
 
     def startMessageProcessing(self):
         """ 
         Start message processing loop
         Continuously reads from USB, converts data (if any) to midi and send to both virtual midi and directly to connected amp
         """
-        self.logInfo(Fore.RED + "Podtana HD Started")
+        self.logInfo(Fore.RED + "Podtana HD Started V1.1")
+
         if (self.amp is not None):
             self.logInfo(Fore.GREEN+"Amp Connected")
         else:
@@ -247,75 +319,70 @@ class ControllerBridge:
             self.logInfo(Fore.GREEN+"Controller Connected")
         else:
             self.logInfo(Fore.RED+"Controller Not Connected")
-            self.cleanup()
-            quit()
 
-        start_time = dt.datetime.today().timestamp()
-        i = 0
+      
+        while True:
+            try:
+                midiMsg = self.messageQueue.get(True, 1000)
+                if (midiMsg is not None):
 
-        try:
-            while True:
-                try:
-                    midiMsg = self.messageQueue.get(True, 1000)
-                    if (midiMsg is not None):
+                    # send message to virtual port, if enabled
+                    if (self.midiout is not None):
+                        self.midiout.send_message(midiMsg.bytes())
 
-                        # send message to virtual port, if enabled
-                        if (self.midiout is not None):
-                            self.midiout.send_message(midiMsg.bytes())
+                    # transpose/map controller values to amp midi values
+                    if (midiMsg.is_cc()):
 
-                        # transpose/map controller values to amp midi values
-                        if (midiMsg.is_cc()):
+                        if (midiMsg.control == 7):  # map vol
+                            midiMsg.control = 81
+                        elif (midiMsg.control == 4):  # map wah
 
-                            if (midiMsg.control == 7):  # map vol
-                                midiMsg.control = 81
-                            elif (midiMsg.control == 4):  # map wah
+                            #midiMsg.channel = 1
+                            midiMsg.control = 80
+                            if (midiMsg.value > 0):  # scale wah 0-64
+                                midiMsg.value = round(midiMsg.value/2)
 
-                                #midiMsg.channel = 1
-                                midiMsg.control = 80
-                                if (midiMsg.value > 0):  # scale wah 0-64
-                                    midiMsg.value = round(midiMsg.value/2)
-
-                            if (self.lastMsgSent is not None and self.lastMsgSent.is_cc()):
-                                if midiMsg.control == self.lastMsgSent.control and midiMsg.value == self.lastMsgSent.value:
-                                    self.logVerbose('skipping duplicate')
-                                    continue
-
-                        self.lastMsgSent = midiMsg
-
-                        self.logVerbose("SENDING: {}".format(midiMsg))
-
-                        # send message to amp, if enabled
+                        if (self.lastMsgSent is not None and self.lastMsgSent.is_cc()):
+                            if midiMsg.control == self.lastMsgSent.control and midiMsg.value == self.lastMsgSent.value:
+                                self.logVerbose('skipping duplicate')
+                                continue
+                    
+                    if (midiMsg.type == 'program_change'):
+                        # send reset for max volume before changing patch
                         if (self.amp is not None):
-                            self.amp.send(midiMsg)
+                            self.logInfo("Setting volume max")
+                            self.amp.send(mido.Message('control_change', control=81, value=127))
 
-                    time_diff = dt.datetime.today().timestamp() - start_time
-                    i += 1
-                    opsPerSecond = i / time_diff
-                  
-                except Exception as e:
-                    self.logError(e)
-        except Exception as e:
-            self.logError(e)
-            self.cleanup()
-            quit()
+                    self.lastMsgSent = midiMsg
 
-# pause a few seconds if we are starting from boot to allow all devices to be ready.
-time.sleep(3)
+                    self.logVerbose("SENDING: {}".format(midiMsg))
 
+                    # send message to amp, if enabled
+                    if (self.amp is not None):
+                        self.amp.send(midiMsg)
+
+            except Exception as e:
+                self.logError(e)
+      
 controllerBridge = ControllerBridge()
 
 controllerBridge.setup()
-controllerBridge.openControllerDevice()
+
+# listen for controller and amp device changes
+threading.Thread(target=controllerBridge.startDeviceWatcher,daemon=True).start()
 
 # listen for controller midi events
-threading.Thread(target=controllerBridge.startMessageReader,
-                 daemon=True).start()
+threading.Thread(target=controllerBridge.startMessageReader,daemon=True).start()
 
 # process midi events
-threading.Thread(target=controllerBridge.startMessageProcessing,
-                 daemon=True).start()
-while True:
-    time.sleep(1)
+threading.Thread(target=controllerBridge.startMessageProcessing,daemon=True).start()
 
-controllerBridge.cleanup()
-quit()
+print("Starting event loop")
+
+try:
+    while True:
+        time.sleep(10)
+except KeyboardInterrupt:
+    print("cleanup and close")
+    controllerBridge.cleanup()
+    quit()
