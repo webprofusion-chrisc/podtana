@@ -151,10 +151,10 @@ class ControllerBridge:
             print(Fore.BLUE + " "+str(dt.datetime.now())+" "+msg)
 
     def logInfo(self, msg):
-        print(Fore.WHITE+msg)
+        print(Fore.WHITE + " "+str(dt.datetime.now())+" "+msg)
 
     def logError(self, msg):
-        print(Fore.RED+msg)
+        print(Fore.RED + " "+str(dt.datetime.now())+" "+msg)
 
     def openControllerDevice(self):
 
@@ -378,15 +378,16 @@ controllerBridge = ControllerBridge()
 controllerBridge.setup()
 
 # listen for controller and amp device changes
-threading.Thread(target=controllerBridge.startDeviceWatcher,daemon=True).start()
+threading.Thread(target=controllerBridge.startDeviceWatcher,
+                 daemon=True).start()
 
 # listen for controller midi events
-threading.Thread(target=controllerBridge.startMessageReader,daemon=True).start()
+threading.Thread(target=controllerBridge.startMessageReader,
+                 daemon=True).start()
 
 # process midi events
-threading.Thread(target=controllerBridge.startMessageProcessing,daemon=True).start()
-
-print("Starting event loop")
+threading.Thread(
+    target=controllerBridge.startMessageProcessing, daemon=True).start()
 
 try:
     while True:
