@@ -126,7 +126,7 @@ class ControllerBridge:
             maxRead = 4
             while maxRead > 0:
                 maxRead = maxRead-1
-                data = endpoint.read(32, timeout)
+                data = endpoint.read(9, timeout) # experiment with ready byte values here 3-64, midi messages are up to 3 bytes but controller can send several in a batch
 
                 if data is not None:
                     bData = bytes(data)
@@ -301,7 +301,7 @@ class ControllerBridge:
                 time.sleep(1)
 
             except Exception as e:
-                self.logError(e)
+                self.logError(repr(e))
 
     def startMessageProcessing(self):
         """ 
