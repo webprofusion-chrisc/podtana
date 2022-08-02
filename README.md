@@ -12,8 +12,9 @@ Bridge from USB Line 6 POD HD 400 to Boss Katana MKII (100 etc), Also advertises
 
 # Notes & Limitations:
 
-Anyone with the necessary skills or interest is welcome to try and get it working on their setup to improve it. Currently it seems a little low resolution on the PI I'm using (could be a glitch reading the midi commands or just not fast enough) so things like volume have a noticeable step. I've also found the Line 6 is unreliable for program change messages and will sometime say you have changed to preset 0 when you have stepped on 2 etc. Stepping twice generally fixes it. Also investigating a problem where one of the devices seems to be going to sleep or stops sending/receiving.
+Anyone with the necessary skills or interest is welcome to try and get it working on their setup to improve it. 
 
+I've found the Line 6 is sometimes unreliable for program change messages and will occasionally say you have changed to preset 0 when you have stepped on 2 etc. Stepping twice generally fixes it. Also investigating a problem where one of the devices seems to be going to sleep or stops sending/receiving.
 
 Requires user permissions for usb device:
 `sudo nano /etc/udev/rules.d/50-myusb.rules`
