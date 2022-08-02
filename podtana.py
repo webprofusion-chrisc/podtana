@@ -124,11 +124,14 @@ class ControllerBridge:
             # read n bytes from endpoint, append output until there is no more data or we have reached max reads
 
             maxRead = 4
+
             while maxRead > 0:
                 maxRead = maxRead-1
-                data = endpoint.read(9, timeout) # experiment with ready byte values here 3-64, midi messages are up to 3 bytes but controller can send several in a batch
 
-                if data is not None:
+                # experiment with ready byte values here 3-64, midi messages are up to 3 bytes but controller can send several in a batch
+                data = endpoint.read(8, 0)
+
+                if data is not None and len(data) > 0:
                     bData = bytes(data)
                     allBytes += bData
                 else:
@@ -145,7 +148,7 @@ class ControllerBridge:
 
     def logVerbose(self, msg):
         if enableVerboseLogs:
-            print(Fore.BLUE+msg)
+            print(Fore.BLUE + " "+str(dt.datetime.now())+" "+msg)
 
     def logInfo(self, msg):
         print(Fore.WHITE+msg)
@@ -226,6 +229,9 @@ class ControllerBridge:
             self.logVerbose(str(self.epRead))
             self.logVerbose(str(self.epWrite))
 
+            # endpoint max packet size is 8 bytes, using this hint greatly improves read performance
+            self.epRead.wMaxPacketSize=8
+
             # send midi reset message
             self.epWrite.write(mido.Message('reset').bytes())
 
@@ -255,7 +261,7 @@ class ControllerBridge:
             except Exception as e:
                 self.logError("Exception during controller read.")
                 self.logError(e)
-
+                pass
 
     def startDeviceWatcher(self):
         """
@@ -302,6 +308,7 @@ class ControllerBridge:
 
             except Exception as e:
                 self.logError(repr(e))
+                pass
 
     def startMessageProcessing(self):
         """ 
@@ -320,7 +327,6 @@ class ControllerBridge:
         else:
             self.logInfo(Fore.RED+"Controller Not Connected")
 
-      
         while True:
             try:
                 midiMsg = self.messageQueue.get(True, 1000)
@@ -350,8 +356,9 @@ class ControllerBridge:
                     if (midiMsg.type == 'program_change'):
                         # send reset for max volume before changing patch
                         if (self.amp is not None):
-                            self.logInfo("Setting volume max")
-                            self.amp.send(mido.Message('control_change', control=81, value=127))
+                            self.logVerbose("Setting volume max")
+                            self.amp.send(mido.Message(
+                                'control_change', control=81, value=127))
 
                     self.lastMsgSent = midiMsg
 
@@ -362,7 +369,9 @@ class ControllerBridge:
                         self.amp.send(midiMsg)
 
             except Exception as e:
-                self.logError(e)
+                self.logError(repr(e))
+                pass
+
       
 controllerBridge = ControllerBridge()
 
