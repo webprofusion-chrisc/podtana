@@ -28,6 +28,7 @@ CONTROLLER_READ_ENDPOINT = '132'
 enableVirtualControllerDevice = True
 enableVerboseLogs = False
 
+
 class ControllerBridge:
     device = None
     """ The controller device e.g. the POD HD 400"""
@@ -93,7 +94,7 @@ class ControllerBridge:
             # reconnect amp
             self.amp = mido.open_output(ampPort)
 
-        if (self.controllerConnected):            
+        if (self.controllerConnected):
             self.openControllerDevice()
 
     def cleanup(self):
@@ -116,35 +117,16 @@ class ControllerBridge:
             if self.was_kernel_driver_active == True:
                 self.device.attach_kernel_driver(0)
 
-    def read_from_endpoint(self, endpoint, timeout):
-        """ read from the given endpoint, allowing given timeout """
+    def read_from_endpoint(self, endpoint):
+        """ read from the given endpoint, returning empty byte array if no data read or exception occurs """
 
-        allBytes = bytearray(b'')
+        data = bytearray(b'')
+
         try:
-            # read n bytes from endpoint, append output until there is no more data or we have reached max reads
-
-            maxRead = 4
-
-            while maxRead > 0:
-                maxRead = maxRead-1
-
-                # experiment with ready byte values here 3-64, midi messages are up to 3 bytes but controller can send several in a batch
-                data = endpoint.read(8, 0)
-
-                if data is not None and len(data) > 0:
-                    bData = bytes(data)
-                    allBytes += bData
-                else:
-                    print("no data, breaking")
-                    break
-
-            return allBytes
-
-        except usb.core.USBError as usbError:
-            return allBytes
-        except Exception as e:
-            print("read :: {}".format(e))
-            return None
+            data = endpoint.read(endpoint.wMaxPacketSize, 0)
+            return bytes(data)
+        except:
+            return data
 
     def logVerbose(self, msg):
         if enableVerboseLogs:
@@ -209,6 +191,7 @@ class ControllerBridge:
                 interface=0, alternate_setting=5)
 
             cfg = self.device.get_active_configuration()
+            print(cfg)
 
             intf = cfg[(0, 5)]
 
@@ -229,30 +212,24 @@ class ControllerBridge:
             self.logVerbose(str(self.epRead))
             self.logVerbose(str(self.epWrite))
 
-            # endpoint max packet size is 8 bytes, using this hint greatly improves read performance
-            self.epRead.wMaxPacketSize=8
-
-            # send midi reset message
-            self.epWrite.write(mido.Message('reset').bytes())
-
     def startMessageReader(self):
         """
         Continuously read from USB, add messages to queue
         """
-    
+        parser = mido.Parser()
+
         while True:
             try:
                 if (self.controllerConnected and self.epRead is not None):
-                    data = self.read_from_endpoint(self.epRead, 0)
 
-                    if data != None:
+                    data = self.read_from_endpoint(self.epRead)
+
+                    if data != None and len(data)>0:
                         try:
-                            messages = mido.parse_all(data)
+                            parser.feed(data)
 
-                            if messages is not None and len(messages) > 0:
-
-                                for midiMsg in messages:
-                                    self.messageQueue.put(midiMsg)
+                            for midiMsg in parser:
+                                self.messageQueue.put(midiMsg)
 
                         except Exception as midiErr:
                             self.logError(midiErr)
@@ -298,7 +275,7 @@ class ControllerBridge:
                 else:
                     if (self.ampConnected is False):
                         self.logInfo("Amp [re]connected")
-                        self.ampConnected = True  
+                        self.ampConnected = True
                         configChanged = True
 
                 if (configChanged and self.ampConnected and self.controllerConnected):
@@ -337,22 +314,22 @@ class ControllerBridge:
                         self.midiout.send_message(midiMsg.bytes())
 
                     # transpose/map controller values to amp midi values
+
                     if (midiMsg.is_cc()):
 
                         if (midiMsg.control == 7):  # map vol
                             midiMsg.control = 81
                         elif (midiMsg.control == 4):  # map wah
-
-                            #midiMsg.channel = 1
                             midiMsg.control = 80
-                            if (midiMsg.value > 0):  # scale wah 0-64
-                                midiMsg.value = round(midiMsg.value/2)
 
                         if (self.lastMsgSent is not None and self.lastMsgSent.is_cc()):
                             if midiMsg.control == self.lastMsgSent.control and midiMsg.value == self.lastMsgSent.value:
                                 self.logVerbose('skipping duplicate')
                                 continue
-                    
+                            if midiMsg.control == 0 or midiMsg.control == 32:
+                                self.logVerbose('skipping unused command')
+                                continue
+
                     if (midiMsg.type == 'program_change'):
                         # send reset for max volume before changing patch
                         if (self.amp is not None):
@@ -372,7 +349,7 @@ class ControllerBridge:
                 self.logError(repr(e))
                 pass
 
-      
+
 controllerBridge = ControllerBridge()
 
 controllerBridge.setup()
